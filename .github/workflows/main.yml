@@ -67,10 +67,11 @@ jobs:
 
       - name: Gemini AI Analysis of Sonar Report
         uses: google-github-actions/run-gemini-cli@v0
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_PROJECT_ROOT: ${{ github.workspace }}
         with:
           provider: 'google-ai'
-          google_api_key: ${{ secrets.GEMINI_API_KEY }}
-          project_id: ${{ env.PROJECT_ID }}
           model: 'gemini-2.5-flash-lite'
           files: "main.py, sonar-report.json"
           prompt: |
