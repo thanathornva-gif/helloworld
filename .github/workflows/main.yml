@@ -43,6 +43,7 @@ jobs:
         uses: google-github-actions/run-gemini-cli@v0
         with:
           provider: 'vertex'
+          google_api_key: ${{ secrets.GEMINI_API_KEY }}
           project_id: ${{ env.PROJECT_ID }}
           location: 'us-central1' # Vertex AI มักนิยมใช้ภูมิภาคนี้หรือ asia-southeast1 (ถ้าเปิดใช้)
           model: 'gemini-2.5-flash-lite'
