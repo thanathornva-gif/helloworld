@@ -61,7 +61,9 @@ jobs:
           fi
 
       - name: Prepare Gemini CLI Environment
-        run: mkdir -p ~/.gemini && echo "{}" > ~/.gemini/projects.json
+        run: |
+          mkdir -p ~/.gemini
+          echo '{"projects": {}}' > ~/.gemini/projects.json
 
       - name: Gemini AI Analysis of Sonar Report
         uses: google-github-actions/run-gemini-cli@v0
