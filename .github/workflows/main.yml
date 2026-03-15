@@ -1,11 +1,11 @@
-name: CI/CD Pipeline with SonarCloud, Gemini Vertex AI, and Cloud Run
+name: CI/CD Pipeline
 
 on:
   push:
-      branches: [ "main", "develop" ] # รันเมื่อมีการ Push ตรงเข้า main หรือ develop
+    branches: [ "main", "develop" ]
   pull_request:
-      branches: [ "main", "develop" ] # รันเมื่อมีการสร้าง/อัปเดต PR ไปยัง main หรือ develop
-      types: [opened, synchronize, reopened] # รันเมื่อเปิด PR, อัปเดตโค้ดใน PR, หรือเปิด PR ซ้ำ
+    branches: [ "main", "develop" ]
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
 
 env:
@@ -16,47 +16,88 @@ env:
   IMAGE_NAME: hello-fastapi-image
 
 jobs:
-  analysis-and-deploy:
+  # --- Job 1: Unit Testing ---
+  unit-test:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          fetch-depth: 0 
+          python-version: '3.11'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest -r requirements.txt
+      - name: Run Tests
+        run: pytest
 
-      # 1. SonarCloud Scan (ต้องการไฟล์ sonar-project.properties ที่ root)
-      - name: SonarCloud Scan
-        uses: sonarsource/sonarcloud-github-action@v5.0.0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+  # --- Job 2: Static & AI Analysis (ทำไปพร้อมกับ Test ได้เลย) ---
+  analysis:
+    needs: unit-test # จะรันก็ต่อเมื่อ Unit Test ผ่านแล้วเท่านั้น (หรือจะลบบรรทัดนี้ออกเพื่อรันขนานกันก็ได้)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      # ดึง Component Key จากไฟล์ Properties ---
+      - name: Get Component Key from properties
+        id: get_key
+        run: |
+          PROP_KEY=$(grep 'sonar.projectKey' sonar-project.properties | cut -d'=' -f2 | xargs)
+          echo "SONAR_KEY=$PROP_KEY" >> $GITHUB_ENV
+          echo "detected Project Key: $PROP_KEY"
 
-      # 2. Authenticate to Google Cloud (ทำก่อนใช้ Gemini CLI เพื่อให้ใช้ ADC ได้)
+      # --- ขั้นตอนดึง Report โดยใช้ค่าที่ดึงมาได้ ---
+      - name: Fetch SonarCloud Issues Report
+        run: |
+          curl -u "${{ secrets.SONAR_TOKEN }}:" \
+            "https://sonarcloud.io/api/issues/search?componentKeys=${{ env.SONAR_KEY }}&resolved=false" \
+            -o sonar-report.json
+          
+          if [ ! -s sonar-report.json ]; then
+            echo "{ \"issues\": [], \"message\": \"No issues found or API error\" }" > sonar-report.json
+          fi
+
+      - name: Prepare Gemini CLI Environment
+        run: mkdir -p ~/.gemini && echo "{}" > ~/.gemini/projects.json
+
+      - name: Gemini AI Analysis of Sonar Report
+        uses: google-github-actions/run-gemini-cli@v0
+        with:
+          provider: 'google-ai'
+          google_api_key: ${{ secrets.GEMINI_API_KEY }}
+          model: 'gemini-2.5-flash-lite'
+          files: "main.py, sonar-report.json"
+          prompt: |
+            Analyze the sonar-report.json file (which contains the results from SonarCloud)
+            along with the code in main.py, and summarize the findings in Markdown format:
+            1. Summarize the number and severity of the problems found.
+            2. Describe the most critical issues and their solutions (referencing lines in main.py if available).
+            3. Provide additional recommendations for improving the security of this FastAPI according to OWASP standards.
+
+  # --- Job 3: Build and Deployment ---
+  deploy:
+    # เงื่อนไขสำคัญ: ต้องผ่านทั้ง Test และ Analysis และต้องเป็นเหตุการณ์ Push (Merge) เท่านั้น
+    needs: [unit-test, analysis]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
       - id: 'auth'
-        name: Authenticate to Google Cloud
         uses: 'google-github-actions/auth@v2'
         with:
           credentials_json: '${{ secrets.GCP_CREDENTIALS }}'
 
-      # 3. AI Insights with Gemini (Vertex AI)
-      - name: AI Code Insights with Gemini
-        uses: google-github-actions/run-gemini-cli@v0
-        with:
-          provider: 'google-ai'
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          project_id: ${{ env.PROJECT_ID }}
-          model: 'gemini-2.5-flash-lite'
-          prompt: "Please analyze this Python code for logic errors and suggest optimizations."
-          files: "main.py"
-
-      # 4. Build and Push Docker Image
       - name: Build and Push to Artifact Registry
         run: |
           gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
-          docker build -t ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/${{ env.IMAGE_NAME }}:${{ github.sha }} .
-          docker push ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          TAG=${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          docker build -t $TAG .
+          docker push $TAG
 
-      # 5. Deploy to Cloud Run
       - name: Deploy to Cloud Run
         uses: google-github-actions/deploy-cloudrun@v2
         with:
