@@ -70,6 +70,7 @@ jobs:
         with:
           provider: 'google-ai'
           google_api_key: ${{ secrets.GEMINI_API_KEY }}
+          project_id: ${{ env.PROJECT_ID }}
           model: 'gemini-2.5-flash-lite'
           files: "main.py, sonar-report.json"
           prompt: |
