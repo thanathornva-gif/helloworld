@@ -1,0 +1,60 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+
+env:
+  PROJECT_ID: your-gcp-project-id
+  REGION: asia-southeast1
+  SERVICE_NAME: my-ai-app
+  IMAGE_NAME: my-app-image
+
+jobs:
+  analysis-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # สำคัญสำหรับ SonarQube ในการวิเคราะห์ประวัติโค้ด
+
+      # ขั้นตอนที่ 1: SonarQube Scan
+      - name: SonarQube Scan
+        uses: sonarsource/sonarqube-scan-action@v3
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+      # ขั้นตอนที่ 2: ใช้ Gemini CLI (เช่น เพื่อรีวิวโค้ดสั้นๆ หรือสรุป Change log)
+      - name: AI Code Insights with Gemini
+        uses: google-github-actions/run-gemini-cli@v0
+        with:
+          prompt: "Please summarize the changes in this code and check for potential logic errors."
+          files: "." # ระบุไฟล์หรือโฟลเดอร์ที่ต้องการให้ Gemini วิเคราะห์
+        env:
+          # หากใช้ Vertex AI ต้องระบุ PROJECT_ID และใช้ Auth ของ GCP
+          # หากใช้ Gemini API Key ทั่วไป ให้ส่งค่าผ่าน Environment ตามที่ Action กำหนด
+          GOOGLE_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+
+      # ขั้นตอนที่ 3: Authenticate to Google Cloud
+      - id: 'auth'
+        uses: 'google-github-actions/auth@v2'
+        with:
+          credentials_json: '${{ secrets.GCP_CREDENTIALS }}'
+
+      # ขั้นตอนที่ 4: Build and Push Docker Image
+      - name: Build and Push to Artifact Registry
+        run: |
+          gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev
+          docker build -t ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/repo/${{ env.IMAGE_NAME }}:${{ github.sha }} .
+          docker push ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/repo/${{ env.IMAGE_NAME }}:${{ github.sha }}
+
+      # ขั้นตอนที่ 5: Deploy to Cloud Run
+      - name: Deploy to Cloud Run
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: ${{ env.SERVICE_NAME }}
+          region: ${{ env.REGION }}
+          image: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/repo/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          flags: '--allow-unauthenticated'
