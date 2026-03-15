@@ -1,14 +1,19 @@
-name: CI/CD Pipeline
+name: CI/CD Pipeline with SonarCloud, Gemini Vertex AI, and Cloud Run
 
 on:
   push:
-    branches: [ "main" ]
+      branches: [ "main", "develop" ] # รันเมื่อมีการ Push ตรงเข้า main หรือ develop
+  pull_request:
+      branches: [ "main", "develop" ] # รันเมื่อมีการสร้าง/อัปเดต PR ไปยัง main หรือ develop
+      types: [opened, synchronize, reopened] # รันเมื่อเปิด PR, อัปเดตโค้ดใน PR, หรือเปิด PR ซ้ำ
+  workflow_dispatch:
 
 env:
-  PROJECT_ID: your-gcp-project-id
+  PROJECT_ID: project-6840ef2a-d272-45b3-a6b
   REGION: asia-southeast1
-  SERVICE_NAME: my-ai-app
-  IMAGE_NAME: my-app-image
+  SERVICE_NAME: hello-fastapi
+  ARTIFACT_REPO: hello-fastapi-registry
+  IMAGE_NAME: hello-fastapi-image
 
 jobs:
   analysis-and-deploy:
@@ -17,44 +22,45 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # สำคัญสำหรับ SonarQube ในการวิเคราะห์ประวัติโค้ด
+          fetch-depth: 0 
 
-      # ขั้นตอนที่ 1: SonarQube Scan
-      - name: SonarQube Scan
-        uses: sonarsource/sonarqube-scan-action@v3
+      # 1. SonarCloud Scan (ต้องการไฟล์ sonar-project.properties ที่ root)
+      - name: SonarCloud Scan
+        uses: sonarsource/sonarcloud-scan-action@v3
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
 
-      # ขั้นตอนที่ 2: ใช้ Gemini CLI (เช่น เพื่อรีวิวโค้ดสั้นๆ หรือสรุป Change log)
-      - name: AI Code Insights with Gemini
-        uses: google-github-actions/run-gemini-cli@v0
-        with:
-          prompt: "Please summarize the changes in this code and check for potential logic errors."
-          files: "." # ระบุไฟล์หรือโฟลเดอร์ที่ต้องการให้ Gemini วิเคราะห์
-        env:
-          # หากใช้ Vertex AI ต้องระบุ PROJECT_ID และใช้ Auth ของ GCP
-          # หากใช้ Gemini API Key ทั่วไป ให้ส่งค่าผ่าน Environment ตามที่ Action กำหนด
-          GOOGLE_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-
-      # ขั้นตอนที่ 3: Authenticate to Google Cloud
+      # 2. Authenticate to Google Cloud (ทำก่อนใช้ Gemini CLI เพื่อให้ใช้ ADC ได้)
       - id: 'auth'
+        name: Authenticate to Google Cloud
         uses: 'google-github-actions/auth@v2'
         with:
           credentials_json: '${{ secrets.GCP_CREDENTIALS }}'
 
-      # ขั้นตอนที่ 4: Build and Push Docker Image
+      # 3. AI Insights with Gemini (Vertex AI)
+      - name: AI Code Insights with Gemini
+        uses: google-github-actions/run-gemini-cli@v0
+        with:
+          provider: 'vertex'
+          project_id: ${{ env.PROJECT_ID }}
+          location: 'us-central1' # Vertex AI มักนิยมใช้ภูมิภาคนี้หรือ asia-southeast1 (ถ้าเปิดใช้)
+          model: 'gemini-2.5-flash-lite'
+          prompt: "Please analyze this Python code for logic errors and suggest optimizations."
+          files: "main.py"
+
+      # 4. Build and Push Docker Image
       - name: Build and Push to Artifact Registry
         run: |
-          gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev
-          docker build -t ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/repo/${{ env.IMAGE_NAME }}:${{ github.sha }} .
-          docker push ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/repo/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+          docker build -t ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/${{ env.IMAGE_NAME }}:${{ github.sha }} .
+          docker push ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
 
-      # ขั้นตอนที่ 5: Deploy to Cloud Run
+      # 5. Deploy to Cloud Run
       - name: Deploy to Cloud Run
         uses: google-github-actions/deploy-cloudrun@v2
         with:
           service: ${{ env.SERVICE_NAME }}
           region: ${{ env.REGION }}
-          image: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/repo/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          image: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
           flags: '--allow-unauthenticated'
