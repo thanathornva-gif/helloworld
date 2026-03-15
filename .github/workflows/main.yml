@@ -26,7 +26,7 @@ jobs:
 
       # 1. SonarCloud Scan (ต้องการไฟล์ sonar-project.properties ที่ root)
       - name: SonarCloud Scan
-        uses: sonarsource/sonarcloud-scan-action@v5.0.0
+        uses: sonarsource/sonarcloud-github-action@v5.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -42,9 +42,9 @@ jobs:
       - name: AI Code Insights with Gemini
         uses: google-github-actions/run-gemini-cli@v0
         with:
-          provider: 'vertex'
+          provider: 'google-ai'
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           project_id: ${{ env.PROJECT_ID }}
-          location: 'us-central1' # Vertex AI มักนิยมใช้ภูมิภาคนี้หรือ asia-southeast1 (ถ้าเปิดใช้)
           model: 'gemini-2.5-flash-lite'
           prompt: "Please analyze this Python code for logic errors and suggest optimizations."
           files: "main.py"
