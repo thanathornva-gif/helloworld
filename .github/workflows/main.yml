@@ -65,14 +65,19 @@ jobs:
           mkdir -p ~/.gemini
           echo '{"projects": {}}' > ~/.gemini/projects.json
 
+      - name: Authenticate to Google Cloud
+        id: 'auth'
+        uses: 'google-github-actions/auth@v2'
+        with:
+          credentials_json: '${{ secrets.GCP_CREDENTIALS }}'
+
       - name: Gemini AI Analysis of Sonar Report
         uses: google-github-actions/run-gemini-cli@v0
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_PROJECT_ROOT: ${{ github.workspace }}
         with:
           provider: 'google-ai'
           model: 'gemini-2.5-flash-lite'
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          project_id: ${{ env.PROJECT_ID }}
           files: "main.py, sonar-report.json"
           prompt: |
             Analyze the sonar-report.json file (which contains the results from SonarCloud)
@@ -88,9 +93,8 @@ jobs:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-
-      - id: 'auth'
+      - name: Authenticate to Google Cloud
+        id: 'auth'
         uses: 'google-github-actions/auth@v2'
         with:
           credentials_json: '${{ secrets.GCP_CREDENTIALS }}'
