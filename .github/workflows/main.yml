@@ -2,21 +2,19 @@ name: CI/CD Pipeline
 
 on:
   push:
-    branches: [ "main", "develop" ]
-  pull_request:
-    branches: [ "main", "develop" ]
-    types: [opened, synchronize, reopened]
-  workflow_dispatch:
+    tags:
+      - 'v[0-9]+\.[0-9]+\.[0-9]+'
 
 env:
-  PROJECT_ID: project-6840ef2a-d272-45b3-a6b
-  REGION: asia-southeast1
-  SERVICE_NAME: hello-fastapi
-  ARTIFACT_REPO: hello-fastapi-registry
-  IMAGE_NAME: hello-fastapi-image
+  PROJECT_ID: ${{ vars.PROJECT_ID }}
+  REGION: ${{ vars.REGION }}
+  SERVICE_NAME: ${{ vars.SERVICE_NAME }}
+  ARTIFACT_REPO: ${{ vars.ARTIFACT_REPO }}
+  IMAGE_NAME: ${{ vars.IMAGE_NAME }}
+  GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
 
 jobs:
-  # --- Job 1: Unit Testing ---
+  # Job 1 Unit Testing
   unit-test:
     runs-on: ubuntu-latest
     steps:
@@ -32,16 +30,15 @@ jobs:
       - name: Run Tests
         run: pytest
 
-  # --- Job 2: Static & AI Analysis (ทำไปพร้อมกับ Test ได้เลย) ---
+  # Job 2 Analysis
   analysis:
-    needs: unit-test # จะรันก็ต่อเมื่อ Unit Test ผ่านแล้วเท่านั้น (หรือจะลบบรรทัดนี้ออกเพื่อรันขนานกันก็ได้)
+    needs: unit-test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       
-      # ดึง Component Key จากไฟล์ Properties ---
       - name: Get Component Key from properties
         id: get_key
         run: |
@@ -49,7 +46,6 @@ jobs:
           echo "SONAR_KEY=$PROP_KEY" >> $GITHUB_ENV
           echo "detected Project Key: $PROP_KEY"
 
-      # --- ขั้นตอนดึง Report โดยใช้ค่าที่ดึงมาได้ ---
       - name: Fetch SonarCloud Issues Report
         run: |
           curl -u "${{ secrets.SONAR_TOKEN }}:" \
@@ -75,7 +71,7 @@ jobs:
         uses: google-github-actions/run-gemini-cli@v0
         with:
           provider: 'google-ai'
-          model: 'gemini-2.5-flash-lite'
+          model: ${{ env.GEMINI_MODEL }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           project_id: ${{ env.PROJECT_ID }}
           files: "main.py, sonar-report.json"
@@ -86,11 +82,9 @@ jobs:
             2. Describe the most critical issues and their solutions (referencing lines in main.py if available).
             3. Provide additional recommendations for improving the security of this FastAPI according to OWASP standards.
 
-  # --- Job 3: Build and Deployment ---
+  # Job 3 Build and Deployment
   deploy:
-    # เงื่อนไขสำคัญ: ต้องผ่านทั้ง Test และ Analysis และต้องเป็นเหตุการณ์ Push (Merge) เท่านั้น
     needs: [unit-test, analysis]
-    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -104,15 +98,16 @@ jobs:
 
       - name: Build and Push to Artifact Registry
         run: |
+          VERSION=${{ github.ref_name }}
           gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
-          TAG=${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
-          docker build -t $TAG .
-          docker push $TAG
+          FULL_IMAGE_NAME=${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/${{ env.IMAGE_NAME }}:$VERSION
+          docker build -t $FULL_IMAGE_NAME .
+          docker push $FULL_IMAGE_NAME
 
       - name: Deploy to Cloud Run
         uses: google-github-actions/deploy-cloudrun@v2
         with:
           service: ${{ env.SERVICE_NAME }}
           region: ${{ env.REGION }}
-          image: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          image: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/${{ env.IMAGE_NAME }}:$VERSION
           flags: '--allow-unauthenticated'
